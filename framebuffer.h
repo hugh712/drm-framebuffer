@@ -18,6 +18,7 @@ struct framebuffer {
     uint8_t *data;
     uint32_t size;
     struct drm_mode_create_dumb dumb_framebuffer;
+    drmModePlaneResPtr plane;
     drmModeCrtcPtr crtc;
     drmModeConnectorPtr connector;
     drmModeModeInfoPtr resolution;

@@ -173,13 +173,92 @@ error:
     return err;
 }
 
+int fill_framebuffer_from_files(struct framebuffer *fb, struct framebuffer *fb2, char *img1, char *img2)
+{
+    size_t total_read = 0;
+    int ret;
+    int img_fd1, img_fd2;
+
+    img_fd1 = open(img1,O_RDONLY);
+    img_fd2 = open(img2,O_RDONLY);
+
+    print_verbose("Loading image 1\n");
+    while (total_read < fb->dumb_framebuffer.size)
+    {
+        size_t sz = read(img_fd1, &fb->data[total_read], fb->dumb_framebuffer.size - total_read);
+        if(sz<=0)		/* stop when getting EOF */
+        {
+            break;
+        }
+        total_read += sz;
+    }
+
+    print_verbose("Loading image 2\n");
+    total_read=0;
+    while (total_read < fb2->dumb_framebuffer.size)
+    {
+        size_t sz = read(img_fd2, &fb2->data[total_read], fb2->dumb_framebuffer.size - total_read);
+        if(sz<=0)		/* stop when getting EOF */
+        {
+            break;
+        }
+        total_read += sz;
+    }
+
+
+    close(img_fd1);
+    close(img_fd2);
+
+    /* Make sure we synchronize the display with the buffer. This also works if page flips are enabled */
+    ret = drmSetMaster(fb->fd);
+    if(ret)
+    {
+        printf("Could not get master role for DRM.\n");
+        return ret;
+    }
+    drmModeSetCrtc(fb->fd, fb->crtc->crtc_id, 0, 0, 0, NULL, 0, NULL);
+    drmModeSetCrtc(fb->fd, fb->crtc->crtc_id, fb->buffer_id, 0, 0, &fb->connector->connector_id, 1, fb->resolution);
+    drmDropMaster(fb->fd);
+
+    print_verbose("Sent image 1 to framebuffer\n");
+
+    ret = drmSetMaster(fb2->fd);
+    if(ret)
+    {
+        printf("Could not get master role for DRM.\n");
+        return ret;
+    }
+    sleep(1);
+    drmModeSetCrtc(fb2->fd, fb2->crtc->crtc_id, fb2->buffer_id, 0, 0, &fb2->connector->connector_id, 1, fb2->resolution);
+    print_verbose("Sent image 2 to framebuffer\n");
+
+    sleep(1);
+    /* show the plane*/
+    /*Crop the rect form framebuffer(200, 400) to crtc (1500,50)*/
+    drmModeSetPlane(fb2->fd, fb2->plane->planes[0], fb2->crtc->crtc_id, fb2->buffer_id,
+        0, 1500, 50, 320, 320,
+        200 << 16, 400 << 16, 320 << 16, 320 << 16);
+
+    drmDropMaster(fb2->fd);
+
+    sigset_t wait_set;
+    sigemptyset(&wait_set);
+    sigaddset(&wait_set, SIGTERM);
+    sigaddset(&wait_set, SIGINT);
+
+    int sig;
+    sigprocmask(SIG_BLOCK, &wait_set, NULL );
+    sigwait(&wait_set, &sig);
+
+    return 0;
+}
 
 int fill_framebuffer_from_stdin(struct framebuffer *fb)
 {
     size_t total_read = 0;
     int ret;
 
-    print_verbose("Loading image\n");
+    print_verbose("Loading image 0\n");
     while (total_read < fb->dumb_framebuffer.size)
     {
         size_t sz = read(STDIN_FILENO, &fb->data[total_read], fb->dumb_framebuffer.size - total_read);
@@ -218,6 +297,8 @@ int fill_framebuffer_from_stdin(struct framebuffer *fb)
 int main(int argc, char** argv)
 {
     char *dri_device = 0;
+    char *img1 = 0;
+    char *img2 = 0;
     char *connector = 0;
     int c;
     int list = 0;
@@ -225,11 +306,17 @@ int main(int argc, char** argv)
     int ret;
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "d:c:lrhv")) != -1) {
+    while ((c = getopt (argc, argv, "d:c:p:s:lrhv")) != -1) {
         switch (c)
         {
         case 'd':
             dri_device = optarg;
+            break;
+        case 'p':
+            img1 = optarg;
+            break;
+        case 's':
+            img2 = optarg;
             break;
         case 'c':
             connector = optarg;
@@ -272,8 +359,36 @@ int main(int argc, char** argv)
     }
 
     struct framebuffer fb;
+    struct framebuffer fb2;
     memset(&fb, 0, sizeof(fb));
+
+    if (img2 != 0){
+	memset(&fb2, 0, sizeof(fb));
+    }
     ret = 1;
+
+    /*For file input case*/
+    if (img2 != 0){
+      if (get_framebuffer(dri_device, connector, &fb) != 0) {
+          return ret;
+      }
+      if (get_framebuffer(dri_device, connector, &fb2) != 0) {
+          release_framebuffer(&fb);
+          return ret;
+      }
+
+
+      if(!fill_framebuffer_from_files(&fb, &fb2, img1, img2)){
+          // successfully shown.
+          ret = 0;
+      }
+      release_framebuffer(&fb);
+      release_framebuffer(&fb2);
+
+      return ret;
+    }
+
+    /*For stdin case*/
     if (get_framebuffer(dri_device, connector, &fb) == 0) {
         if(!fill_framebuffer_from_stdin(&fb))
         {

@@ -54,6 +54,9 @@ void release_framebuffer(struct framebuffer *fb)
             drmModeSetCrtc(fb->fd, fb->crtc->crtc_id, fb->crtc->buffer_id, 0, 0, &fb->connector->connector_id, 1, fb->resolution);
             drmModeFreeCrtc(fb->crtc);
         }
+        if (fb->plane)
+            drmModeFreePlaneResources(fb->plane);
+
         if (fb->buffer_id)
             drmModeFreeFB(drmModeGetFB(fb->fd, fb->buffer_id));
         /* This will also release resolution */
@@ -73,7 +76,9 @@ int get_framebuffer(const char *dri_device, const char *connector_name, struct f
     int err;
     int fd;
     drmModeResPtr res;
+    drmModePlaneResPtr plane_res;
     drmModeEncoderPtr encoder = 0;
+
 
     /* Open the dri device /dev/dri/cardX */
     fd = open(dri_device, O_RDWR);
@@ -88,6 +93,12 @@ int get_framebuffer(const char *dri_device, const char *connector_name, struct f
         printf("Could not get drm resources\n");
         return -EINVAL;
     }
+
+    /*Get the plane*/
+    //If set to 1, the DRM core will expose all planes (overlay, primary, and cursor) to userspace.
+    drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+    plane_res = drmModeGetPlaneResources(fd);
+    //plane_id = plane_res->planes[0];
 
     /* Search the connector provided as argument */
     drmModeConnectorPtr connector = 0;
@@ -113,8 +124,12 @@ int get_framebuffer(const char *dri_device, const char *connector_name, struct f
         return -EINVAL;
     }
 
-    /* Get the preferred resolution */
+    /* Get the preferred resolution and set default to 1st one */
     drmModeModeInfoPtr resolution = 0;
+
+    if (connector->count_modes >= 0)
+	    resolution = &connector->modes[0];
+
     for (int i = 0; i < connector->count_modes; i++) {
             drmModeModeInfoPtr res = 0;
             res = &connector->modes[i];
@@ -128,6 +143,7 @@ int get_framebuffer(const char *dri_device, const char *connector_name, struct f
         goto cleanup;
     }
 
+    printf("set resolution to %dx%d\n", resolution->hdisplay, resolution->vdisplay);
     fb->dumb_framebuffer.height = resolution->vdisplay;
     fb->dumb_framebuffer.width = resolution->hdisplay;
     fb->dumb_framebuffer.bpp = 32;
@@ -145,6 +161,7 @@ int get_framebuffer(const char *dri_device, const char *connector_name, struct f
         goto cleanup;
     }
 
+    printf("Encoder id= %d\n", connector->encoder_id);
     encoder = drmModeGetEncoder(fd, connector->encoder_id);
     if (!encoder) {
         printf("Could not get encoder\n");
@@ -177,6 +194,7 @@ int get_framebuffer(const char *dri_device, const char *connector_name, struct f
     drmDropMaster(fd);
 
     fb->fd = fd;
+    fb->plane = plane_res;
     fb->connector = connector;
     fb->resolution = resolution;
 
